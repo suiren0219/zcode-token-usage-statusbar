@@ -152,6 +152,20 @@ python autopatch.py apply   # 需要时补注入（静默，不弹监控窗口�
 - 条面显示「不在本地库」：见下面「SSH 远程会话」一节。这个会话的数据不在本机数据库里，
   不是插件坏了。
 
+### ZCode 升级之后条面消失
+
+官方升级会整包替换 `resources/app.asar`，把注入行一并抹掉。这跟插件出 bug 的症状一模一样，
+但原因完全不同：
+
+```bash
+python bootstrap.py --check     # 注入状态那一行会写「缺失/被覆盖」
+python autopatch.py apply       # 重新注入
+```
+
+`autopatch.py apply` 需要**完全退出 ZCode**——asar 被客户端占用时替换会失败（`WinError 5`）。
+它会把新包写进 `app.asar.zusage.tmp` 但没法改名覆盖。已退出后重跑一次即可，
+或执行 `python patch_install.py install --finalize` 只做最后那步替换。
+
 ### SSH 远程会话（条面全 0 最常见的原因）
 
 桌面客户端连的是远端 zcode-server 时，会话数据落在**远端机**的
@@ -209,6 +223,17 @@ python zusage.py json <a-session-id>
 
 只配了本机、远端没放脚本，`remote_error` 会是 `ssh rc=2: … No such file or directory`；
 只放远端、本机没配 `remote`，条面会提示「在 config.json 配置 remote 段即可」。
+
+### 要重启两次才出数据（v64 及更早）
+
+症状：重启 ZCode 后条面出来了，但一直是 0；再重启一次才正常。
+
+v65 已修。原因是三处缺陷叠加——查询失败时 `lastStamp` 提前写死，导致后续轮次
+全被去重逻辑挡回；常驻进程管道断掉时 `busy` 卡满 15 秒；失败后不重试只等 30 秒
+心跳（而空闲时根本没有 db 写入可等）。
+
+如果你还在 v64 或更早，升级到 v65 即可；临时绕过办法是重启两次、或让 ZCode 产生
+一次新的对话写入（会推动 `lastStamp` 变化）。
 
 ### 想回到默认配置
 
