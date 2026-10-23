@@ -240,11 +240,30 @@ function openSettingsWindow() {
     if (!fs.existsSync(pagePath)) return { ok: false, error: "settings.html missing" };
     const html = fs.readFileSync(pagePath, "utf8");
 
+    /* 挂到触发它的那个 ZCode 窗口上做子窗：居中、不可最大化、不占任务栏。
+     * 不用 modal：模态会阻塞主窗口，改完想边看边调就得先关窗，体验更差。
+     * 拿不到父窗口就退化成独立窗口，不能因此打不开。 */
+    let parent = null;
+    try {
+      const { webContents } = require("electron");
+      const all = webContents.getAllWebContents().filter(
+        (wc) => wc && !wc.isDestroyed() && isMainWindowState(wc));
+      if (all.length) parent = BrowserWindow.fromWebContents(all[0]);
+    } catch (e) { parent = null; }
+    const parentAlive = !!(parent && !parent.isDestroyed());
+
     settingsWin = new BrowserWindow({
       width: 730, height: 780, minWidth: 560, minHeight: 460,
       title: "ZCode Token 用量 · 设置",
-      backgroundColor: "#16181d",
+      backgroundColor: "#191919",
       autoHideMenuBar: true,
+      // 弹窗感：无最大化/最小化、不进任务栏、开在父窗口中央
+      maximizable: false,
+      minimizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      parent: parentAlive ? parent : undefined,
+      show: false,
       webPreferences: {
         preload: path.join(HERE, "settings-preload.cjs"),
         contextIsolation: false,
@@ -253,6 +272,10 @@ function openSettingsWindow() {
       },
     });
     settingsWin.setMenuBarVisibility(false);
+    settingsWin.once("ready-to-show", () => {
+      try { settingsWin.center(); } catch (e) { }
+      try { settingsWin.show(); } catch (e) { }
+    });
     settingsWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
     settingsWin.on("closed", () => { settingsWin = null; });
     return { ok: true };
