@@ -349,7 +349,19 @@ def install(finalize=False, monitor=True):
                     "or run manually afterwards: python patch_install.py install --finalize"))
             if monitor: launch_monitor(time.time())
             return False
-    os.replace(TMP, ASAR)
+    try:
+        os.replace(TMP, ASAR)
+    except OSError as e:
+        # finalize 分支原先没有兜底：asar 仍被占用（客户端没退干净，或 helper 进程
+        # 还攥着句柄）就直接抛栈。这里给可执行的下一步，而不是让用户看 Traceback。
+        print(L(f"\n替换失败（{e}）。", f"\nReplacement failed ({e})."))
+        print(L("asar 仍被占用——请确认 ZCode 已**完全退出**（含托盘图标与后台进程）：",
+                "The asar is still locked — make sure ZCode has fully quit (including the tray icon and background processes):"))
+        print(L("  tasklist /FI \"IMAGENAME eq ZCode.exe\"    # 应无输出",
+                "  tasklist /FI \"IMAGENAME eq ZCode.exe\"    # should print nothing"))
+        print(L(f"新包已备好（{TMP.name}），退出后重跑本命令即可。",
+                f"The new package is ready ({TMP.name}); re-run this command after quitting."))
+        return False
     print(L("完成。启动 ZCode 即可在窗口底部看到悬浮条。", "Done. Start ZCode and the floating bar appears at the bottom of the window."))
     cleanup_legacy_bak()
     if monitor:
@@ -399,5 +411,20 @@ def check():
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "check"
-    {"install": install, "remove": remove, "check": check}.get(cmd, check)()
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv and not argv[0].startswith("-") else "check"
+    # --asar 指定安装位置：默认值 D:\ZCode 只对原生安装器成立，绿色版/自定义目录必须能覆盖
+    for i, a in enumerate(argv):
+        if a == "--asar" and i + 1 < len(argv):
+            set_target(Path(argv[i + 1]))
+        elif a.startswith("--asar="):
+            set_target(Path(a.split("=", 1)[1]))
+    finalize = "--finalize" in argv
+    monitor = "--no-monitor" not in argv
+    if cmd == "install":
+        # 旧实现只按命令名分发，--finalize 从未被读入 install()：「客户端退出后跑
+        # install --finalize」实际是重跑完整安装，在自定义目录下还会因默认路径
+        # D:\ZCode 直接报权限错误（实测踩到）。
+        ok = install(finalize=finalize, monitor=monitor)
+        sys.exit(0 if ok else 1)
+    {"remove": remove, "check": check}.get(cmd, check)()

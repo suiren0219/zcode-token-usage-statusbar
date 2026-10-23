@@ -8,6 +8,7 @@ diag-*.json
 .worktrees/
 .zcode/
 config.json
+hoverbar.json
 .update-baseline.json
 dist/
 *.zip

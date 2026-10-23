@@ -4,7 +4,9 @@
 既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]]），
 也可被 usage_mcp.py import 为查询库。
 """
+import glob
 import json
+import os
 import re
 import shlex
 import sqlite3
@@ -414,30 +416,160 @@ def render_workspace(con, pattern, top=15):
 
 # ---------- 机器可读快照（悬浮条数据源） ----------
 
-CATALOG_PATH = Path(r"D:\ZCode\resources\model-providers\models_catalog_china_llm_zcode_2026-06-03.json")
-
-
+CATALOG_GLOBS = (
+    # v2（当前版本）：运行期下发的内置模型规则，contextWindow 在 modelRules 里
+    "~/.zcode/v2/runtime/provider/*/*/endpoint-*/zcode-builtin.json",
+    # 旧版：安装目录下的模型目录
+    "resources/model-providers/models_catalog*.json",
+    "model-providers/models_catalog*.json",
+)
+_CATALOG_FOUND = []      # [Path|None]；探过一次就缓存（None 也缓存，避免每次重扫盘）
 _CTX_WINDOW_CACHE = {}
 
 
+def _zcode_exe_dirs():
+    """正在运行的 ZCode.exe 所在目录。客户端装哪都行，不写死路径。"""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    k32, psapi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("psapi")
+    dirs = []
+    arr = (wintypes.DWORD * 4096)()
+    need = wintypes.DWORD()
+    if not psapi.EnumProcesses(arr, ctypes.sizeof(arr), ctypes.byref(need)):
+        return dirs
+    n = need.value // ctypes.sizeof(wintypes.DWORD)
+    for i in range(n):
+        h = k32.OpenProcess(0x1000, False, arr[i])   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                if os.path.basename(buf.value).lower() == "zcode.exe":
+                    d = os.path.dirname(buf.value)
+                    if d not in dirs:
+                        dirs.append(d)
+        finally:
+            k32.CloseHandle(h)
+    return dirs
+
+
+def _catalog_candidates():
+    """按优先级产出候选文件：v2 内置规则取版本号最大的那个，再退到旧版目录。"""
+    out = []
+    try:   # 0) config.json 显式指定
+        c = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8"))
+        if c.get("catalog"):
+            out.append(Path(c["catalog"]))
+    except Exception:
+        pass
+
+    v2 = sorted(glob.glob(os.path.expanduser(CATALOG_GLOBS[0])),
+                key=_ver_key, reverse=True)
+    out.extend(Path(p) for p in v2)
+
+    for d in _zcode_exe_dirs():   # 安装目录（本目录与上一级都试）
+        for up in (d, os.path.dirname(d)):
+            for g in CATALOG_GLOBS[1:]:
+                out.extend(sorted(Path(up).glob(g)))
+    for env in ("ZCODE_HOME", "ZCODE_PATH"):   # 环境变量兜底
+        v = os.environ.get(env)
+        if v:
+            for g in CATALOG_GLOBS[1:]:
+                out.extend(sorted(Path(v).glob(g)))
+    return out
+
+
+def _ver_key(path: str):
+    """从 …/windows-x86_64/3.15.3/… 里取 3.15.3 当排序键。"""
+    parts = path.replace("\\", "/").split("/")
+    for seg in reversed(parts[:-1]):
+        try:
+            return tuple(int(x) for x in seg.split("."))
+        except ValueError:
+            continue
+    return (0,)
+
+
+def _find_catalog():
+    """定位客户端自带模型规则文件。找不到返回 None。"""
+    if _CATALOG_FOUND:
+        return _CATALOG_FOUND[0]
+    for p in _catalog_candidates():
+        try:
+            if p.is_file():
+                _CATALOG_FOUND.append(p)
+                return p
+        except OSError:
+            pass
+    if os.environ.get("ZUSAGE_DEBUG"):   # 静默：serve 的 stdout 是协议通道，只能写 stderr
+        print("catalog 未找到", file=sys.stderr)
+    _CATALOG_FOUND.append(None)
+    return None
+
+
+def _rules_window(model_id):
+    """新版目录：modelRules 按 modelMatch 正则匹配，后面命中的覆盖前面的。"""
+    path = _find_catalog()
+    if not path:
+        return None
+    try:
+        cat = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    rules = (((cat.get("config") or {}).get("modelConfigRules") or {})
+             .get("modelRules") or [])
+    hit, hit_specific = None, -1
+    for r in rules:
+        pat = r.get("modelMatch")
+        if not pat:
+            continue
+        try:
+            if not re.fullmatch(pat, model_id):
+                continue
+        except re.error:
+            continue
+        cw = (((r.get("config") or {}).get("properties") or {})
+              .get("contextWindow"))
+        if not cw:
+            continue
+        # 越具体的规则越可信（正则越长）；同分取后出现的（后者覆盖前者）
+        if len(pat) >= hit_specific:
+            hit, hit_specific = int(cw), len(pat)
+    return hit
+
+
+def _legacy_window(model_id):
+    """旧版目录：providers[].models[].contextWindow。"""
+    path = _find_catalog()
+    if not path:
+        return None
+    try:
+        cat = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    for p in cat.get("providers", []):
+        for m in p.get("models", []):
+            if str(m.get("id", "")).lower() == model_id:
+                cw = m.get("contextWindow")
+                return int(cw) if cw else None
+    return None
+
+
 def lookup_context_window(model_id):
-    """按模型 id 在客户端自带模型目录里查 contextWindow；查不到返回 None。带缓存。"""
+    """按模型 id 查 contextWindow；查不到返回 None。带缓存。"""
     want = (model_id or "").strip().lower()
     if not want:
         return None
     if want in _CTX_WINDOW_CACHE:
         return _CTX_WINDOW_CACHE[want]
-    result = None
-    try:
-        cat = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    for p in cat.get("providers", []):
-        for m in p.get("models", []):
-            if str(m.get("id", "")).lower() == want:
-                cw = m.get("contextWindow")
-                result = int(cw) if cw else None
-                break
+    result = _rules_window(want)
+    if result is None:
+        result = _legacy_window(want)
     _CTX_WINDOW_CACHE[want] = result
     return result
 
