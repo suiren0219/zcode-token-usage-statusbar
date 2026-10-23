@@ -39,7 +39,7 @@ python bootstrap.py
 git clone https://github.com/xhwxt/zcode-token-usage-statusbar.git
 cd zcode-token-usage-statusbar
 git fetch https://github.com/suiren0219/zcode-token-usage-statusbar.git fix/issue-22
-git cherry-pick 6ea5707ca4f67ce8cd4e1e3f65be96c2b310d923
+git cherry-pick aae102f2a335b5687ea159e7eadf207e7e5c13d8
 ```
 
 那个分支只有一个 commit、改一个文件、+7/-1，冲突概率很低。
