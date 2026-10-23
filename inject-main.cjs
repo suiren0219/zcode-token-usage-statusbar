@@ -325,6 +325,12 @@ let pushCount = 0;
 let lastSpawn = 0;    // 上次发起查询时刻（activity_min_ms 限频用）
 let lastStamp = 0;    // 上次拉取时的 db mtime（去重：无新写入不拉）
 let lastWants = "";   // 上次查询用的会话 id 集合（变化即拉，防"会话切了但 db 没写入"滞留旧数据）
+/* 发起查询时的 dbStamp。**只有拿到 payload 才提交到 lastStamp**（v65）：
+ * 旧实现直接写 lastStamp，查询失败（Python 未就绪/超时/busy 卡住）也会留下去重标记，
+ * 下一轮看到 st === lastStamp 直接 return，永久停摆到下一次 db 写入为止——现象就是
+ * "功能恢复要重启两次"（第一次撞上就废，第二次恰逢预热成功）。 */
+let queryStamp = 0;
+let queryFail = 0;   // 连续失败次数（指数退避上限 8s）；成功即清零
 let lastPayload = null;   // v63：最近一次快照缓存，新窗口/重载后立即补推，免等下一次写入
 
 /* 诊断写盘：定位问题用，稳定运行时应关闭。
@@ -336,6 +342,9 @@ function diagEnabled() {
 
 function handlePayload(payload) {
   if (!payload || typeof payload !== "object") return;
+  /* v65：查询成功才提交去重标记。失败路径走到这里以外（done(null)），
+   * lastStamp 保持旧值 → 下一轮仍会重试，不再需要"重启两次"。 */
+  if (queryStamp) { lastStamp = queryStamp; }
   lastPayload = payload;   // 缓存供新窗口/重载即时补推（v63）
   remoteSids.clear();
   for (const r of (payload.recent || [])) if (r && r.remote && r.sid) remoteSids.add(r.sid);
@@ -425,9 +434,17 @@ function runQuery(wants) {
   busy = true;
   const done = (payload) => {
     busy = false;
-    if (payload) handlePayload(payload);
+    if (payload) {
+      handlePayload(payload);
+    } else {
+      /* v65：失败立即退避重试，不干等 30s 心跳。旧注释写"下一笔 db 写入会再拉"，
+       * 但空闲时根本没有写入——冷启动撞上一次失败就是"条里一直是 0，必须再重启"。 */
+      queryFail = Math.min(queryFail + 1, 5);
+      scheduleRetry(Math.min(400 * (1 << (queryFail - 1)), 8000));
+      return;
+    }
+    queryFail = 0;
     if (lastHadRemote) scheduleRetry(remotePollMs());   // 远端会话聚焦期间维持轮询链
-    // 失败不原地重试：下一笔 db 写入/心跳会再拉，最多滞后一个心跳
   };
   if (readCfgCached().resident !== false && pyFail < 3) {
     if (!pyRes) startResident();
@@ -440,7 +457,18 @@ function runQuery(wants) {
         done(null);
       }, 15000);
       state.waiters.push((payload) => { clearTimeout(timer); done(payload); });
-      try { state.proc.stdin.write((wants || "") + "\n"); } catch (e) { }
+      try {
+        state.proc.stdin.write((wants || "") + "\n");
+      } catch (e) {
+        /* 管道已断（进程刚崩/被杀）：立刻收场并重启常驻进程，别干等 15s 超时。
+         * 旧实现把异常吞掉，busy 卡满 15s，期间所有 maybeSpawn 都被 `if (busy)` 挡回，
+         * 叠加 lastStamp 陈旧判定就会出现"要重启两次"。 */
+        clearTimeout(timer);
+        LOG("resident stdin write failed:", e.message);
+        pyRestarting = true;
+        try { state.proc.kill(); } catch (e2) { }
+        done(null);
+      }
       return;
     }
   }
@@ -502,7 +530,7 @@ function maybeSpawn(opts) {
     });
     lastWants = wants0.join(",");
     lastSpawn = Date.now();
-    if (st) lastStamp = st;
+    queryStamp = st;   // 待提交：runQuery 成功后由 handlePayload 提交到 lastStamp
     runQuery(lastWants);
     return;
   }
@@ -530,7 +558,7 @@ function maybeSpawn(opts) {
       if (now - lastSpawn < effWait) { scheduleRetry(effWait - (now - lastSpawn) + 50); return; }
       lastWants = key;
       lastHadRemote = remoteActive;
-      if (st) lastStamp = st;
+      queryStamp = st;   // 待提交，成功才生效
       lastSpawn = now;
       runQuery(key);
     })
@@ -638,10 +666,13 @@ function injectOverlay(wc) {
   if (!overlaySrc || !isMainWindowState(wc)) return;
   /* v64：overlay 跑在 contextIsolation 的渲染进程里，拿不到 ipcRenderer，
    * 也无法自建窗口。设置面板的数据读写走上面的请求泵（window.__zusageReq/Res）。
-   * v63 首屏快速路径保留：overlay 装好后立刻补推最近一次快照。 */
+   * v63 首屏快速路径保留：overlay 装好后立刻补推最近一次快照。
+   * v65：没有缓存快照（冷启动、或上次查询失败）就主动拉一次——否则 overlay 只能
+   * 干等下一次 db 写入，用户看到的就是"条出来了但一直是 0，还得再重启一次"。 */
   wc.executeJavaScript(overlaySrc, true)
     .then(() => {
       if (lastPayload) pushOnce(wc, lastPayload);
+      else scheduleRetry(120);
     })
     .catch(() => { });
 }
