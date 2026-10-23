@@ -149,6 +149,66 @@ python autopatch.py apply   # 需要时补注入（静默，不弹监控窗口�
 - 请求完成才落库，正在生成的请求不计入。
 - 新会话还没产生已完成请求时，条面会是零值并带来源提示。
 - 会话迁移过工作区的话，历史用量会一并算进新目录（`model_usage` 没有工作区维度）。
+- 条面显示「不在本地库」：见下面「SSH 远程会话」一节。这个会话的数据不在本机数据库里，
+  不是插件坏了。
+
+### SSH 远程会话（条面全 0 最常见的原因）
+
+桌面客户端连的是远端 zcode-server 时，会话数据落在**远端机**的
+`~/.zcode/cli/db/db.sqlite`。本地库永远查不到它，所以条面会显示一排 0 加一个
+「不在本地库」徽标。
+
+要让它出数，**两端各要准备一半，缺一半就永远是 0**：
+
+**远端机**——只要一个文件，不用装别的东西：
+
+```bash
+mkdir -p ~/.zcode/zcode-token-usage-statusbar
+scp zusage.py <host>:~/.zcode/zcode-token-usage-statusbar/zusage.py
+# 验证（必须能打出 JSON）
+ssh <host> python3 ~/.zcode/zcode-token-usage-statusbar/zusage.py json
+```
+
+远端这份 `zusage.py` 的 `config.json` 里**不要**写 `remote` 段，否则会递归查询自己。
+
+**本机**——`config.json` 里加 `remote` 段：
+
+```json
+{
+  "remote": {
+    "enabled": true,
+    "ssh": "ssh <host>",
+    "script": "/home/<user>/.zcode/zcode-token-usage-statusbar/zusage.py",
+    "python": "python3",
+    "timeout_s": 8,
+    "poll_ms": 3000,
+    "host_label": "<host>"
+  }
+}
+```
+
+`script` 要写**绝对路径**——`~` 在非交互式 ssh 里不展开，写 `~` 会拿不到文件。
+改完不用重启 ZCode，下一次查询就会用上新配置。
+
+**验证整条链路**（在本机跑，sid 换成你正在看的那个会话）：
+
+```bash
+python zusage.py json <a-session-id>
+```
+
+看两个字段：
+
+- `remote_enabled` 应为 `true`。为 `false` 说明 `remote` 段没读到——多半是 `config.json`
+  不是安装目录里那个，或 `enabled` 不是 `true`。
+- `recent` 里应出现带 `"remote": true` 的条目。出现了且各项有值就是通了；没出现就看
+  `remote_error`（`ssh rc=…` / `timeout` / `no JSON payload`）。
+
+条面出现 ☁「远端」徽标即表示正在用远端数据，悬停能看到主机名和最近一次错误。
+远端会话聚焦期间按 `poll_ms` 轮询（本地库的写入事件对远端无效），切回本地会话后
+恢复纯事件触发、零轮询。
+
+只配了本机、远端没放脚本，`remote_error` 会是 `ssh rc=2: … No such file or directory`；
+只放远端、本机没配 `remote`，条面会提示「在 config.json 配置 remote 段即可」。
 
 ### 想回到默认配置
 

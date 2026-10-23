@@ -184,6 +184,48 @@ def mcp_state():
             "names": sorted(servers.keys())}
 
 
+def remote_state():
+    """SSH 远端数据源（v9）：体检 remote 段是否配全。
+
+    只做静态判定，不发起 ssh：体检可能跑在别人的机器上，连不连得上由用户决定，
+    一条网络依赖不该让整个体检变红。返回：
+      state=unset   没配 remote —— 正常，只影响"看服务器会话"这一种用法
+      state=partial 配了但缺字段，必然取不到数（这是真问题）
+      state=ready   字段齐全，顺带给出可直接复制的验证命令
+    """
+    p = Path.home() / ".zcode" / "zcode-token-usage-statusbar" / "config.json"
+    if not p.is_file():
+        return {"state": "unset", "ok": True, "path": str(p)}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"state": "unset", "ok": True, "path": str(p), "error": str(e)}
+    r = data.get("remote")
+    if not isinstance(r, dict) or not r.get("enabled"):
+        return {"state": "unset", "ok": True, "path": str(p)}
+    missing = [k for k in ("ssh", "script") if not r.get(k)]
+    script = str(r.get("script") or "")
+    warns = []
+    if missing:
+        warns.append("remote 段缺字段: " + ", ".join(missing))
+    # 非交互式 ssh 不展开 ~，写 ~ 路径会一直取不到文件（实际踩过）
+    if script.startswith("~"):
+        warns.append("remote.script 用了 ~，非交互式 ssh 不展开，请写绝对路径")
+    if not script.startswith("/") and not script.startswith("~"):
+        warns.append("remote.script 建议写绝对路径")
+    return {
+        "state": "partial" if warns else "ready",
+        "ok": not warns,
+        "path": str(p),
+        "host_label": r.get("host_label") or "",
+        "ssh": r.get("ssh"),
+        "script": script,
+        "poll_ms": r.get("poll_ms") or 3000,
+        "problems": warns,
+        "hint": "python zusage.py json <会话id>  # 看 remote_enabled 与 recent 里的 remote 条目",
+    }
+
+
 def check_all():
     asar, how = find_asar()
     ident = zcode_identity(asar) if asar else {"ok": False, "reason": how}
@@ -201,6 +243,7 @@ def check_all():
         "injection": inj,
         "config": config_state(),
         "mcp": mcp_state(),
+        "remote": remote_state(),
     }
     problems = []
     if not report["python"]["ok"]:
@@ -222,6 +265,9 @@ def check_all():
             problems.append("config.json 有问题: " + str(report["config"].get("error")))
     if not report["mcp"]["ok"]:
         problems.append("MCP 未注册（可选，只影响对话内查询）")
+    # remote 只在配了却配不全时才算问题：没配是正常形态
+    if report["remote"]["state"] == "partial":
+        problems.extend(report["remote"]["problems"])
     report["problems"] = problems
     report["healthy"] = not problems
     if not report["python"]["ok"] or not asar:
@@ -298,6 +344,14 @@ def emit(report, as_json):
     print(" 配置      : %s" % (c.get("path") if c.get("present") else "未安装"))
     m = report.get("mcp", {})
     print(" MCP       : %s" % ("已注册" if m.get("ok") else "未注册"))
+    r = report.get("remote") or {}
+    if r.get("state") == "ready":
+        print(" 远端会话  : 已配置 — %s (%s, 轮询 %sms)"
+              % (r.get("host_label") or "?", r.get("ssh"), r.get("poll_ms")))
+    elif r.get("state") == "partial":
+        print(" 远端会话  : 配置不完整 — " + "; ".join(r.get("problems") or []))
+    else:
+        print(" 远端会话  : 未配置（只影响查看服务器上的会话）")
     print("-" * 62)
     problems = report.get("problems") or []
     if not problems:
