@@ -88,12 +88,13 @@ Click ⚙ to toggle any bar item, override the context window size, or switch th
 
 ## Which edition do you want?
 
-This repository ships **two independent editions**. Installing the wrong one does not error —
+This repository ships **three independent editions**. Installing the wrong one does not error —
 it simply does nothing — so check first:
 
 | Your setup | Edition | Entry point | How to install |
 |---|---|---|---|
 | **ZCode desktop client** (the Electron app on Windows / macOS) | **Desktop** | `install.py` | `python install.py` at the repo root |
+| Same, but you would rather **not re-patch after every ZCode update** | **Standalone bar** | `hoverbar.py` | `python hoverbar.py` — never touches the client install directory |
 | **Self-hosted ZCode web** (your own server + nginx, opened in a browser or on a phone) | **Web** | [`web/`](web/README.md) | see `web/README.md` — do **not** run `install.py` |
 | Both | Both | — | they are independent and can coexist |
 
@@ -101,6 +102,11 @@ it simply does nothing — so check first:
 
 - The desktop edition injects a loader line into `app.asar`; it only affects the Electron client.
   Running it on a server has no effect at all.
+- The standalone bar is a separate **Python process** drawing in its own borderless window off the
+  same SQLite database. Feature parity with the desktop edition, but a ZCode update cannot wipe it
+  and you never have to quit the client to install it. The trade-off is that it floats over the
+  window instead of sitting inside it; by default an owner-window binding keeps it above ZCode only.
+  See [docs/USAGE.md §4](docs/USAGE.md#4-独立悬浮条免注入升级不影响) (Chinese).
 - The web edition uses nginx injection plus a read-only sidecar; it only affects a web UI **you
   serve yourself**. There is no injection point on the official cloud pages.
 
@@ -121,6 +127,28 @@ python install.py            # add --lang en for English installer/CLI/MCP outpu
 One command does it all: locate the ZCode installation (`ZCODE_ASAR` environment variable → common install locations → otherwise `--root` for the ZCode directory, e.g. `--root D:\Apps\ZCode`, or `--asar` for the full app.asar path; remembered after the first run) → copy the runtime into the data directory `~/.zcode/zcode-token-usage-statusbar/` → migrate/generate config.json → patch app.asar (a single loader line) → register the MCP server → install the /usage command → open an install-monitor window that reminds you to restart ZCode and confirms the injection took effect.
 
 **ZCode upgrades overwrite app.asar — just re-run `python install.py`.**
+
+### Or skip the re-patching entirely: the standalone bar
+
+```bash
+python hoverbar.py            # just run it — no install, no need to quit ZCode
+```
+
+It never touches `app.asar`. It is a separate Python process drawing its own borderless window,
+so a ZCode update cannot wipe it and installing it does not require closing the client. Feature
+parity with the desktop edition, and by default an owner-window binding keeps it above ZCode only
+(it steps aside when ZCode minimises, never steals focus, takes no taskbar slot).
+
+The cut-corner square at the right end of the bar is the settings entry: snap position, follow the
+window or the whole screen, margins, opacity, font size, which items to show, always-on-top.
+
+```bash
+python hoverbar.py --settings   # open the settings panel
+python hoverbar.py --quit       # stop it
+```
+
+The two editions can run at the same time and keep separate configs (`config.json` vs
+`hoverbar.json`). Per-setting details are in [docs/USAGE.md §4](docs/USAGE.md#4-独立悬浮条免注入升级不影响) (Chinese).
 
 ## Data Source
 

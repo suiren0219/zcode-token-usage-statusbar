@@ -29,6 +29,7 @@ CORE = [
     "install_monitor.py",
     "inject-main.cjs", "overlay.js", "zusage.py", "usage_mcp.py",
     "settings.html", "settings-preload.cjs",
+    "hoverbar.py",
     "config.example.json", "usage.command.md",
     "LICENSE",
 ]
@@ -164,6 +165,18 @@ python bootstrap.py --repair   # 只补注入（ZCode 升级后最常见的情�
    启动时加载，界面上的东西也要重启才出现。
 4. **只写两个地方**：ZCode 的 `app.asar`（加一行注入）和
    `~/.zcode/zcode-token-usage-statusbar/`（运行时副本 + 配置）。
+
+## 不想补注入的话
+
+`hoverbar.py` 是同一功能的**独立悬浮条**：不碰 `app.asar`，所以 ZCode 升级后
+不用重跑任何命令。直接
+
+```bash
+python hoverbar.py
+```
+
+就跑起来了（同样只用 Python 标准库）。它浮在 ZCode 窗口上而不是嵌在窗口底部，
+条面最右端的切角方块点开是设置面板。两条路可以同时用，也可以只用这条。
 
 ## 卸载
 

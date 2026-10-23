@@ -8,17 +8,19 @@
 
 ## 先选版本：你是哪一种用户？
 
-本仓库有**两个互不依赖的版本**，装错了不会报错，只会「什么都没发生」——所以先对一下：
+本仓库有**三个互不依赖的版本**，装错了不会报错，只会「什么都没发生」——所以先对一下：
 
 | 你的情况 | 装哪个 | 入口 | 装法 |
 |---|---|---|---|
 | 用 **ZCode 桌面客户端**（Windows / macOS 的 Electron 应用） | **桌面版** | `install.py` | 根目录 `python install.py` |
+| 同上，但**不想每次升级都补注入** | **独立悬浮条** | `hoverbar.py` | `python hoverbar.py`，不碰客户端安装目录 |
 | 用**自托管 ZCode 的网页**（自己跑的 server + nginx，浏览器/手机访问） | **网页版** | [`web/`](web/README.zh-CN.md) | 见 web/ 的 README，**不要**跑 `install.py` |
 | 两个都用 | 两个都装 | — | 互不干扰，可共存 |
 
 **一句话判断**：你打开 ZCode 是用一个**装好的应用程序**，还是在**浏览器里输网址**？
 
 - 桌面版往 `app.asar` 注入一行 loader，**只对 Electron 客户端有效**；在服务器上跑它不会有任何效果。
+- 独立悬浮条是**另一个 Python 进程**，画在自己的无边框窗口里，只读同一份 SQLite。功能与桌面版一致，但**官方升级客户端不会把它抹掉**，也不需要退出 ZCode 才能装。代价是它浮在窗口上而不是嵌在底部，默认靠属主窗口绑定只压在 ZCode 之上。详见 [docs/USAGE.md 第 4 节](docs/USAGE.md#4-独立悬浮条免注入升级不影响)。
 - 网页版靠 nginx 注入 + 一个只读旁挂服务，**只对你自己伺服的网页有效**；官方云端的页面没有注入点。
 
 > 文档与界面统一使用中文名「ZCode Token 用量状态栏」；仓库与 MCP 注册名为 `zcode-token-usage-statusbar`（全称的英文写法），代码内部标识符为 `zusage`。
@@ -121,6 +123,7 @@ ZCode 的插件机制（`plugin.json`）只能提供 MCP / skills / commands / h
 | `patch_install.py` | asar 注入/卸载工具（install.py 的底层，可单独用）：在入口 `out/main/index.js` 尾部追加/剥离本工具的 dynamic import 行 → 重打包 → 自检 → 原子替换。不制作也不依赖备份，卸载只动自己的注入行（其它工具后装的注入行不受影响）。幂等，自动替换旧注入行（迁移友好）。安装成功自动弹出监控窗口。 |
 | `install_monitor.py` | 安装监控窗口（常驻命令行，每 10 秒检测一次）：持续提醒重启 ZCode；重启后通过 diag 更新确认注入加载，显示成功并自动退出。运行中原子替换失败（生成 .tmp）时，它还会在 ZCode 退出后自动完成替换——**收尾不依赖计划任务**。 |
 | `zusage.py` | 查询库 + CLI + 机器可读快照（`json` 子命令，状态条数据源）。 |
+| `hoverbar.py` | **独立悬浮条**（不依赖注入）：无边框圆角胶囊浮在 ZCode 上，只读同一份 SQLite。设置面板为终末地风格，可调贴靠位置 / 跟随窗口还是整块屏幕 / 边距 / 透明度 / 字号 / 显示项 / 置顶 / 失焦隐藏。`--settings` 打开设置，`--quit` 关闭，`--once` 只在终端打一次数据。运行期配置 `hoverbar.json` 与其同目录（不入库）。 |
 | `usage_mcp.py` | 零依赖 stdio MCP server。 |
 | `config.example.json` | 运行配置模板（安装时生成到数据目录的 `config.json`；含本机路径，不入库）。 |
 
@@ -143,6 +146,25 @@ python install.py            # 加 --lang en 可让安装器/CLI/MCP 输出英�
 一条命令完成：探测 ZCode 安装位置（环境变量 `ZCODE_ASAR` → 常见目录 → 找不到时询问，或 `--root` 指定 ZCode 安装目录 / `--asar` 指定 app.asar 完整路径；首次成功后记住位置，之后一律免传）→ **复制运行时到数据目录 `~/.zcode/zcode-token-usage-statusbar/`** → 迁移/生成 config.json → 注入 asar（注入行指向数据目录副本）→ 注册 MCP（server 名 `zcode-token-usage-statusbar`，指向数据目录副本）→ 安装 /usage 命令 → 弹出「安装监控」窗口（每 10 秒检测一次，提醒重启 ZCode；重启后检测到注入加载即显示成功并自动关闭；万一运行中原子替换失败，监控窗口会在你退出 ZCode 后自动完成替换）。
 
 **ZCode 升级会覆盖 app.asar，重跑一次 `python install.py` 即可**（监控窗口提示"未检测到注入加载"通常就是这个原因）。
+
+### 不想每次升级都补注入：独立悬浮条
+
+```bash
+python hoverbar.py            # 直接起，不需要装，不需要退出 ZCode
+```
+
+它不碰 `app.asar`，是另一个 Python 进程画自己的无边框窗口，所以**官方升级不影响它**，
+装它也不用先关客户端。功能与桌面版一致，默认靠 Windows 属主窗口绑定只浮在 ZCode 之上
+（随它最小化让路、不抢焦点、不占任务栏）。条面最右端有个切角方块，点开就是设置面板——
+贴靠位置、跟随窗口还是整块屏幕、边距、透明度、字号、显示哪些项、是否置顶。
+
+```bash
+python hoverbar.py --settings   # 打开设置面板
+python hoverbar.py --quit       # 关掉
+```
+
+逐项说明见 [docs/USAGE.md 第 4 节](docs/USAGE.md#4-独立悬浮条免注入升级不影响)。
+两种形态可以同时用，配置各管各的（`config.json` / `hoverbar.json`）。
 
 ### 让别人（或别的 AI）帮我装
 
