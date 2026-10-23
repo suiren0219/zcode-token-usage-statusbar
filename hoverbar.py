@@ -507,10 +507,12 @@ class HoverBar:
             blocks.append((max(0, w), ops))
 
         sep_w = 1
-        gear_w = self._gear_size() * 2 + 10          # 右端设置入口占位
+        # 右端设置入口：方块边长跟着字号走，前面留 12px 与最后一项断开
+        gear_s = self._gear_size()
+        gear_gap = 12
         total = (pad * 2 + sum(b[0] for b in blocks)
                  + sep_w * len(blocks) + gap * 2 * (len(blocks) - 1)
-                 + gear_w)
+                 + gear_gap + gear_s)
         h = self._px + 14
         total = int(total)
         if total < 60:
@@ -561,7 +563,8 @@ class HoverBar:
 
         # 右端 ⚙：整条最后一项，切角方块 —— 终末地语义里"切角=可点"。
         # 悬停变 acid yellow 反白，点击开设置面板。
-        self._draw_gear(total - pad - gear_w + 5, cy, h)
+        # 方块右边距与左边 pad 对齐，视觉上才是"紧贴末端"而不是悬在中间。
+        self._draw_gear(total - pad - gear_s, cy, h)
 
         self._last_draw = (total, h)
         self._place()
